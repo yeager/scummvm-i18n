@@ -32,29 +32,24 @@ all 34 languages into a single file. It is produced by
 GNU gettext `.mo` is the industry standard for compiled translations, with
 mature tooling (`msgfmt`, `msginit`, `msgmerge`) available on every platform.
 
-### Problem 2: Engine strings are already extracted but via a fragmented system
+### Problem 2: 1,048+ engine strings are never translated
 
-**Correction (Phase 4 findings):** Engine strings ARE already extracted.
-The build system in `po/module.mk` concatenates `po/POTFILES` with
-per-engine `engines/*/POTFILES` files (109 engines have their own POTFILES).
-The current `scummvm.pot` contains **3,069 strings** including all engine
-strings. The total source file count across all POTFILES is **1,052 files**.
+76 of 117 engines contain `_s()` translation markers (1,048 strings total
+across 741 source files), but **none of their source files appear in
+`po/POTFILES`**. This means `xgettext` never extracts them, they never appear
+in `.po` files, and translators never see them. The top offenders:
 
-While the engine strings are already in the pipeline, the per-engine POTFILES
-approach is fragmented — 109 separate files that must be maintained individually.
-A consolidated `po/POTFILES` listing all source files would be simpler to
-maintain and audit.
-
-Top engines by translatable string count:
-
-| Engine | Strings |
-|--------|---------|
+| Engine | Untranslated strings |
+|--------|---------------------|
 | ultima | 319 |
 | mm | 57 |
 | scumm | 51 |
 | sci | 48 |
 | twp | 39 |
 | kyra | 30 |
+
+This is a data bug, not a code bug. The fix is adding 741 source files to
+`po/POTFILES` — a patch included in this proposal.
 
 ### Problem 3: All languages loaded, only one used
 
@@ -91,7 +86,7 @@ but rejected for this phase:
 |------|--------|
 | `common/translation.h` | Add `.mo` reader methods, `HashMap` for translations |
 | `common/translation.cpp` | Add `scanMoFiles()`, `loadLanguageMo()`, `parseMoData()` |
-| `po/POTFILES` | Optionally consolidate all 1,052 source files (currently split across `po/POTFILES` + 109 `engines/*/POTFILES`) |
+| `po/POTFILES` | Add 741 engine source files (134 → 875 entries) |
 
 #### New files
 
@@ -153,16 +148,13 @@ The `.mo` reader is ~60 lines of C++ that:
 The reader has been validated against all 34 language `.mo` files, including
 specific string lookups for Swedish (sv_SE).
 
-### POTFILES Consolidation
+### POTFILES Expansion
 
-The build system already extracts engine strings via per-engine
-`engines/*/POTFILES` (109 files). An optional consolidation patch merges
-all 1,052 source files into a single `po/POTFILES`, simplifying maintenance.
-This produces an identical `.pot` — it is a structural improvement, not a
-content change.
+A patch adds 741 engine source files to `po/POTFILES`. After applying,
+`xgettext` extracts all engine `_s()` strings into `scummvm.pot`, making
+them visible to translators immediately.
 
-The current pipeline produces **3,069 translatable strings** across GUI and
-all 109 engines. No engine code changes are required.
+No engine code changes are required — the `_s()` markers are already in place.
 
 ### Patches
 
@@ -251,3 +243,5 @@ distribution. Update CI to use `msgfmt` in the build pipeline.
 - Proof of concept & patches: https://github.com/yeager/scummvm-i18n
 - Phase 1 analysis: `docs/phase1-report.md`
 - Phase 2 migration guide: `docs/phase2-migration-guide.md`
+- Detailed format comparison: `docs/COMPARISON.md`
+- Testing guide: `docs/TESTING.md`
