@@ -42,9 +42,14 @@ access, agds, ags, asylum, avalanche, bbvs, chamber, composer, cryo, dgds, dm, d
 
 ### POTFILES status
 
-**No individual engine directories are listed in `po/POTFILES`!**
+**⚠️ CORRECTION (Phase 4):** The initial analysis was incomplete. While
+`po/POTFILES` only lists 134 global files, the build system (`po/module.mk`)
+also reads per-engine `engines/*/POTFILES` files. There are **109 engines**
+with their own POTFILES, covering all engine `_s()` strings. The combined
+total is **1,052 source files** producing **3,069 translatable strings**.
 
-POTFILES only references `engines/*.cpp` (shared files: achievements.cpp, advancedDetector.cpp, dialogs.cpp, engine.cpp, game.cpp, metaengine.cpp, savestate.cpp). All 76 engines with `_s()` strings are therefore missing from POTFILES, which means that **engine-specific strings are never extracted to .po files and never translated**.
+Engine strings ARE extracted and available for translation. The initial
+report incorrectly stated they were missing.
 
 ---
 

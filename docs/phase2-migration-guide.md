@@ -33,7 +33,7 @@ proprietary `translations.dat` binary format to standard GNU gettext `.mo` files
 |------|--------|
 | `common/translation.h` | Added `.mo` support methods, `HashMap` for translations, `_usingMo` flag |
 | `common/translation.cpp` | Added `scanMoFiles()`, `loadLanguageMo()`, `parseMoData()`, `moRead32()`; `setLanguage()` tries `.mo` first, falls back to `.dat` |
-| `po/POTFILES` | Added 741 engine source files with `_s()` strings (was: 134 entries → now: 875) |
+| `po/POTFILES` | Optionally consolidated (engines already have per-engine POTFILES; total: 1,052 files, 3,069 strings) |
 
 ### New files (in data/)
 
