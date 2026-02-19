@@ -1,110 +1,17 @@
---- common/translation.h	2026-02-19 19:01:53
-+++ common/translation.h	2026-02-19 19:04:26
-@@ -28,6 +28,8 @@
- #include "common/singleton.h"
- #include "common/str-array.h"
- #include "common/language.h"
-+#include "common/hashmap.h"
-+#include "common/hash-str.h"
- 
- #ifdef USE_TRANSLATION
- 
-@@ -83,6 +85,10 @@
- 
- /**
-  * Message translation manager.
-+ *
-+ * Supports loading translations from:
-+ *   1. Standard GNU gettext .mo files (per-language, in translations/ directory)
-+ *   2. Legacy translations.dat format (fallback for backward compatibility)
-  */
- class TranslationManager : public NonCopyable {
- public:
-@@ -223,18 +229,47 @@
- 	 */
- 	int32 findMatchingLanguage(const String &lang);
- 
-+	// --- .mo file support ---
-+
- 	/**
--	 * Find the translations.dat file.
-+	 * Try to load a .mo file for the given language code.
-+	 * Searches translations/<lang>.mo via SearchMan and themepath.
- 	 *
--	 * First, search using the SearchMan and then, if needed, using the Themepath.
--	 * If found, open the given @p File to read the translations.dat file.
-+	 * @return true if .mo was found and loaded successfully.
-+	 */
-+	bool loadLanguageMo(const String &lang);
-+
-+	/**
-+	 * Read a 32-bit value from .mo data, respecting endianness.
-+	 */
-+	uint32 moRead32(const byte *p) const;
-+
-+	/**
-+	 * Parse a loaded .mo buffer into _moTranslations.
-+	 */
-+	bool parseMoData(const byte *data, uint32 size);
-+
-+	/** Whether the current .mo file needs byte-swapping. */
-+	bool _moNeedSwap;
-+
-+	/** Whether we loaded from .mo (true) or translations.dat (false). */
-+	bool _usingMo;
-+
-+	/**
-+	 * Hash map for .mo-based translations.
-+	 * Key is "msgid" or "context\x04msgid" for context-aware lookups.
- 	 */
-+	HashMap<String, String> _moTranslations;
-+
-+	// --- Legacy translations.dat support ---
-+
-+	/**
-+	 * Find the translations.dat file.
-+	 */
- 	bool openTranslationsFile(File &);
- 
- 	/**
- 	 * Find the translations.dat file in the given directory node.
--	 *
--	 * If found, open the given @p File to read the translations.dat file.
- 	 */
- 	bool openTranslationsFile(const FSNode &node, File &, int depth = -1);
- 
-@@ -245,8 +280,6 @@
- 
- 	/**
- 	 * Load the translation for the given language from the translations.dat file.
--	 *
--	 * @param index Index of the language in the list of languages.
- 	 */
- 	void loadLanguageDat(int index);
- 
-@@ -255,6 +288,11 @@
- 	 */
- 	bool checkHeader(File &in);
- 
-+	/**
-+	 * Scan for available .mo files and populate _langs/_langNames from them.
-+	 */
-+	void scanMoFiles();
-+
- 	StringArray _langs;
- 	StringArray _langNames;
- 
---- common/translation.cpp	2026-02-19 19:01:53
-+++ common/translation.cpp	2026-02-19 19:05:51
-@@ -33,6 +33,7 @@
+diff --git a/common/translation.cpp b/common/translation.cpp
+index 48301335..576b53f3 100644
+--- a/common/translation.cpp
++++ b/common/translation.cpp
+@@ -33,6 +33,8 @@
  #include "common/system.h"
  #include "common/textconsole.h"
  #include "common/unicode-bidi.h"
 +#include "common/memstream.h"
++#include "common/debug.h"
  
  #ifdef USE_TRANSLATION
  
-@@ -40,21 +41,223 @@
+@@ -40,21 +42,223 @@ namespace Common {
  
  DECLARE_SINGLETON(MainTranslationManager);
  
@@ -122,19 +29,19 @@
 +    : _currentLang(-1), _moNeedSwap(false), _usingMo(false) {
 +	// First, try to discover .mo files
 +	scanMoFiles();
- 
++
 +	// If no .mo files found, fall back to translations.dat
 +	if (_langs.empty()) {
 +		loadTranslationsInfoDat(fileName);
 +	}
-+
+ 
  	// Set the default language
  	setLanguage("");
  }
  
  TranslationManager::~TranslationManager() {
 +}
- 
++
 +// ---------------------------------------------------------------------------
 +// .mo file scanning — find available translations/<lang>.mo files
 +// ---------------------------------------------------------------------------
@@ -207,7 +114,7 @@
 +			// We keep the code as the display name for simplicity.
 +		}
 +	}
- }
++}
  
 +// ---------------------------------------------------------------------------
 +// .mo file loading
@@ -219,8 +126,8 @@
 +		v = SWAP_BYTES_32(v);
 +	}
 +	return v;
-+}
-+
+ }
+ 
 +bool TranslationManager::parseMoData(const byte *data, uint32 size) {
 +	if (size < 28)
 +		return false;
@@ -330,7 +237,7 @@
  int32 TranslationManager::findMatchingLanguage(const String &lang) {
  	uint langLength = lang.size();
  	uint numLangs = _langs.size();
-@@ -100,23 +303,58 @@
+@@ -100,23 +304,58 @@ void TranslationManager::setLanguage(const String &lang) {
  	}
  
  	// Load messages for that language.
@@ -351,11 +258,11 @@
  		_currentLang = langIndex;
  	}
  }
-+
+ 
 +// ---------------------------------------------------------------------------
 +// getTranslation — dispatches to .mo or legacy .dat lookup
 +// ---------------------------------------------------------------------------
- 
++
  U32String TranslationManager::getTranslation(const char *message) const {
  	return getTranslation(message, nullptr);
  }
@@ -364,9 +271,8 @@
 -	// If no language is set or message is empty, return msgid as is
 -	if (_currentTranslationMessages.empty() || *message == '\0')
 +	if (*message == '\0')
- 		return U32String(message);
- 
--	// Binary-search for the msgid
++		return U32String(message);
++
 +	// --- .mo path ---
 +	if (_usingMo) {
 +		if (!_moTranslations.empty()) {
@@ -388,13 +294,14 @@
 +
 +	// --- Legacy translations.dat path ---
 +	if (_currentTranslationMessages.empty())
-+		return U32String(message);
-+
+ 		return U32String(message);
+ 
+-	// Binary-search for the msgid
 +	// Binary-search for the msgid (original logic)
  	int leftIndex = 0;
  	int rightIndex = _currentTranslationMessages.size() - 1;
  
-@@ -144,7 +382,6 @@
+@@ -144,7 +383,6 @@ U32String TranslationManager::getTranslation(const char *message, const char *co
  			// Find the context we want
  			if (context == nullptr || *context == '\0' || leftIndex == rightIndex)
  				return _currentTranslationMessages[leftIndex].msgstr.decode();
@@ -402,7 +309,7 @@
  			while (rightIndex > leftIndex) {
  				compareResult = strcmp(context, _currentTranslationMessages[rightIndex].msgctxt.c_str());
  				if (compareResult == 0)
-@@ -164,6 +401,11 @@
+@@ -164,6 +402,11 @@ U32String TranslationManager::getTranslation(const char *message, const char *co
  }
  
  U32String TranslationManager::getTranslation(uint32 index) const {
@@ -414,7 +321,7 @@
  	if (index >= _currentTranslationMessages.size())
  		return U32String("");
  
-@@ -191,8 +433,30 @@
+@@ -191,8 +434,30 @@ U32String TranslationManager::getTranslation(const String &message, const String
  const StringArray TranslationManager::getContexts() const {
  	StringArray contexts;
  
@@ -447,7 +354,7 @@
  	}
  
  	return contexts;
-@@ -237,6 +501,10 @@
+@@ -237,6 +502,10 @@ String TranslationManager::getLangById(int id) const {
  	return "";
  }
  
@@ -458,7 +365,7 @@
  bool TranslationManager::openTranslationsFile(File &inFile) {
  	// First look in the Themepath if we can find the file.
  	if (ConfMan.hasKey("themepath") && openTranslationsFile(FSNode(ConfMan.getPath("themepath")), inFile))
-@@ -262,8 +530,6 @@
+@@ -262,8 +531,6 @@ bool TranslationManager::openTranslationsFile(const FSNode &node, File &inFile,
  		return false;
  
  	// Check if we can find the file in this directory
@@ -467,7 +374,7 @@
  	FSNode fileNode = node.getChild(_translationsFileName);
  	if (fileNode.exists() && fileNode.isReadable() && !fileNode.isDirectory()) {
  		if (inFile.open(fileNode)) {
-@@ -340,6 +606,8 @@
+@@ -340,6 +607,8 @@ void TranslationManager::loadTranslationsInfoDat(const Common::String &name) {
  
  void TranslationManager::loadLanguageDat(int index) {
  	_currentTranslationMessages.clear();
@@ -476,7 +383,7 @@
  	// Sanity check
  	if (index < 0 || index >= (int)_langs.size()) {
  		if (index != -1)
-@@ -365,12 +633,11 @@
+@@ -365,12 +634,11 @@ void TranslationManager::loadLanguageDat(int index) {
  	int skipSize = 0;
  
  	// Skip translation description & size for the original language (english) block
@@ -490,3 +397,101 @@
  
  	// Seek to start of block we want to read
  	in.seek(skipSize, SEEK_CUR);
+diff --git a/common/translation.h b/common/translation.h
+index 4c756fa0..8dc40b68 100644
+--- a/common/translation.h
++++ b/common/translation.h
+@@ -28,6 +28,8 @@
+ #include "common/singleton.h"
+ #include "common/str-array.h"
+ #include "common/language.h"
++#include "common/hashmap.h"
++#include "common/hash-str.h"
+ 
+ #ifdef USE_TRANSLATION
+ 
+@@ -83,6 +85,10 @@ struct PoMessageEntry {
+ 
+ /**
+  * Message translation manager.
++ *
++ * Supports loading translations from:
++ *   1. Standard GNU gettext .mo files (per-language, in translations/ directory)
++ *   2. Legacy translations.dat format (fallback for backward compatibility)
+  */
+ class TranslationManager : public NonCopyable {
+ public:
+@@ -223,18 +229,47 @@ private:
+ 	 */
+ 	int32 findMatchingLanguage(const String &lang);
+ 
++	// --- .mo file support ---
++
+ 	/**
+-	 * Find the translations.dat file.
++	 * Try to load a .mo file for the given language code.
++	 * Searches translations/<lang>.mo via SearchMan and themepath.
+ 	 *
+-	 * First, search using the SearchMan and then, if needed, using the Themepath.
+-	 * If found, open the given @p File to read the translations.dat file.
++	 * @return true if .mo was found and loaded successfully.
++	 */
++	bool loadLanguageMo(const String &lang);
++
++	/**
++	 * Read a 32-bit value from .mo data, respecting endianness.
++	 */
++	uint32 moRead32(const byte *p) const;
++
++	/**
++	 * Parse a loaded .mo buffer into _moTranslations.
++	 */
++	bool parseMoData(const byte *data, uint32 size);
++
++	/** Whether the current .mo file needs byte-swapping. */
++	bool _moNeedSwap;
++
++	/** Whether we loaded from .mo (true) or translations.dat (false). */
++	bool _usingMo;
++
++	/**
++	 * Hash map for .mo-based translations.
++	 * Key is "msgid" or "context\x04msgid" for context-aware lookups.
++	 */
++	HashMap<String, String> _moTranslations;
++
++	// --- Legacy translations.dat support ---
++
++	/**
++	 * Find the translations.dat file.
+ 	 */
+ 	bool openTranslationsFile(File &);
+ 
+ 	/**
+ 	 * Find the translations.dat file in the given directory node.
+-	 *
+-	 * If found, open the given @p File to read the translations.dat file.
+ 	 */
+ 	bool openTranslationsFile(const FSNode &node, File &, int depth = -1);
+ 
+@@ -245,8 +280,6 @@ private:
+ 
+ 	/**
+ 	 * Load the translation for the given language from the translations.dat file.
+-	 *
+-	 * @param index Index of the language in the list of languages.
+ 	 */
+ 	void loadLanguageDat(int index);
+ 
+@@ -255,6 +288,11 @@ private:
+ 	 */
+ 	bool checkHeader(File &in);
+ 
++	/**
++	 * Scan for available .mo files and populate _langs/_langNames from them.
++	 */
++	void scanMoFiles();
++
+ 	StringArray _langs;
+ 	StringArray _langNames;
+ 
